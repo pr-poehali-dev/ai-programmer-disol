@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Icon from '@/components/ui/icon';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,33 +6,317 @@ import { Card } from '@/components/ui/card';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { api } from '@/lib/api';
+import { SpeechRecognition } from '@/lib/speech';
+import { useToast } from '@/hooks/use-toast';
+
+interface User {
+  id: number;
+  email: string;
+  name: string;
+}
+
+interface Message {
+  id?: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at?: string;
+}
+
+interface Project {
+  id: number;
+  title: string;
+  type: string;
+  content: string;
+  language?: string;
+  created_at: string;
+}
 
 export default function Index() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLogin, setIsLogin] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState('chat');
   const [inputMessage, setInputMessage] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<number | undefined>();
+  const [isLoading, setIsLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  
+  const { toast } = useToast();
+  const speechRecognition = useRef(new SpeechRecognition());
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const [authForm, setAuthForm] = useState({
+    email: '',
+    password: '',
+    name: ''
+  });
+
+  useEffect(() => {
+    const savedUser = localStorage.getItem('disol_user');
+    if (savedUser) {
+      const userData = JSON.parse(savedUser);
+      setUser(userData);
+      setIsAuthenticated(true);
+      loadProjects(userData.id);
+    }
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const loadProjects = async (userId: number) => {
+    try {
+      const response = await api.getProjects(userId);
+      if (response.projects) {
+        setProjects(response.projects);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки проектов:', error);
+    }
+  };
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    try {
+      let response;
+      if (isLogin) {
+        response = await api.login(authForm.email, authForm.password);
+      } else {
+        response = await api.register(authForm.email, authForm.password, authForm.name);
+      }
+
+      if (response.success) {
+        const userData = response.user;
+        setUser(userData);
+        setIsAuthenticated(true);
+        localStorage.setItem('disol_user', JSON.stringify(userData));
+        localStorage.setItem('disol_token', response.token);
+        toast({
+          title: 'Успешно!',
+          description: isLogin ? 'Вы вошли в систему' : 'Регистрация завершена'
+        });
+        loadProjects(userData.id);
+      } else {
+        toast({
+          title: 'Ошибка',
+          description: response.error || 'Произошла ошибка',
+          variant: 'destructive'
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Ошибка',
+        description: error.message || 'Ошибка соединения',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim() || !user || isLoading) return;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: inputMessage
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setInputMessage('');
+    setIsLoading(true);
+
+    try {
+      const response = await api.sendMessage(user.id, inputMessage, currentSessionId);
+      
+      if (response.success) {
+        if (!currentSessionId) {
+          setCurrentSessionId(response.session_id);
+        }
+
+        const aiMessage: Message = {
+          role: 'assistant',
+          content: response.message
+        };
+        setMessages(prev => [...prev, aiMessage]);
+      } else {
+        toast({
+          title: 'Ошибка',
+          description: response.error || 'Не удалось отправить сообщение',
+          variant: 'destructive'
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Ошибка',
+        description: 'Проверьте API ключи в настройках проекта',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGenerate = async (type: 'code' | 'image' | 'video') => {
+    if (!inputMessage.trim() || !user || isLoading) return;
+
+    setIsLoading(true);
+    toast({
+      title: 'Генерация...',
+      description: `Тимур создаёт ${type === 'code' ? 'код' : type === 'image' ? 'изображение' : 'видео'}`
+    });
+
+    try {
+      const response = await api.generateContent(user.id, type, inputMessage);
+
+      if (response.success) {
+        toast({
+          title: 'Готово!',
+          description: `${type === 'code' ? 'Код' : type === 'image' ? 'Изображение' : 'Видео'} создано`
+        });
+        
+        setInputMessage('');
+        await loadProjects(user.id);
+        setActiveSection('projects');
+      } else {
+        toast({
+          title: 'Ошибка',
+          description: response.error || response.message || 'Не удалось создать контент',
+          variant: 'destructive'
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Ошибка',
+        description: error.message || 'Ошибка генерации',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startVoiceInput = () => {
+    if (!speechRecognition.current.isSupported()) {
+      toast({
+        title: 'Не поддерживается',
+        description: 'Ваш браузер не поддерживает голосовой ввод',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    setIsListening(true);
+    speechRecognition.current.start(
+      (text) => {
+        setInputMessage(text);
+        setIsListening(false);
+        toast({
+          title: 'Распознано',
+          description: text
+        });
+      },
+      (error) => {
+        setIsListening(false);
+        toast({
+          title: 'Ошибка',
+          description: 'Не удалось распознать речь',
+          variant: 'destructive'
+        });
+      }
+    );
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('disol_user');
+    localStorage.removeItem('disol_token');
+    setUser(null);
+    setIsAuthenticated(false);
+    setMessages([]);
+    setProjects([]);
+  };
 
   const menuItems = [
-    { id: 'chat', icon: 'MessageSquare', label: 'Чат с ИИ' },
+    { id: 'chat', icon: 'MessageSquare', label: 'Чат с Тимур' },
     { id: 'projects', icon: 'FolderKanban', label: 'Проекты' },
-    { id: 'gallery', icon: 'Images', label: 'Галерея' },
-    { id: 'history', icon: 'History', label: 'История' },
-    { id: 'code', icon: 'Code2', label: 'Код' },
     { id: 'profile', icon: 'User', label: 'Профиль' }
   ];
 
-  const mockArtifacts = [
-    { id: 1, type: 'code', title: 'React Dashboard', date: '2 часа назад', language: 'TypeScript' },
-    { id: 2, type: 'image', title: 'Логотип стартапа', date: '5 часов назад', format: 'PNG' },
-    { id: 3, type: 'video', title: 'Промо-ролик', date: '1 день назад', duration: '0:45' },
-    { id: 4, type: 'code', title: 'API Gateway', date: '2 дня назад', language: 'Python' }
-  ];
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Card className="w-full max-w-md glass-effect p-8">
+          <div className="flex items-center justify-center mb-6">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-secondary glow-effect flex items-center justify-center">
+              <span className="text-white font-bold text-2xl">DI</span>
+            </div>
+          </div>
+          <h1 className="text-3xl font-bold text-center mb-2 glow-text">DIsol</h1>
+          <p className="text-center text-muted-foreground mb-6">
+            ИИ-программист Тимур ждёт вас
+          </p>
 
-  const mockMessages = [
-    { role: 'assistant', content: 'Привет! Я DIsol — твой ИИ-помощник полного цикла. Могу создать код, изображения, видео или помочь с проектом. Что будем делать?' },
-    { role: 'user', content: 'Создай дашборд для аналитики продаж' },
-    { role: 'assistant', content: 'Отличная задача! Создаю React-компонент с графиками и таблицами. Используем Chart.js для визуализации.' }
-  ];
+          <div className="flex gap-2 mb-6">
+            <Button
+              onClick={() => setIsLogin(true)}
+              variant={isLogin ? 'default' : 'outline'}
+              className="flex-1"
+            >
+              Вход
+            </Button>
+            <Button
+              onClick={() => setIsLogin(false)}
+              variant={!isLogin ? 'default' : 'outline'}
+              className="flex-1"
+            >
+              Регистрация
+            </Button>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            {!isLogin && (
+              <Input
+                placeholder="Ваше имя"
+                value={authForm.name}
+                onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })}
+                className="bg-muted"
+              />
+            )}
+            <Input
+              type="email"
+              placeholder="Email"
+              value={authForm.email}
+              onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
+              className="bg-muted"
+              required
+            />
+            <Input
+              type="password"
+              placeholder="Пароль"
+              value={authForm.password}
+              onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
+              className="bg-muted"
+              required
+            />
+            <Button
+              type="submit"
+              className="w-full bg-gradient-to-r from-primary to-secondary glow-effect"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Загрузка...' : isLogin ? 'Войти' : 'Зарегистрироваться'}
+            </Button>
+          </form>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -78,16 +362,19 @@ export default function Index() {
         </nav>
 
         <div className="p-4 border-t border-border">
-          <button className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-muted transition-all">
+          <button 
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-muted transition-all"
+          >
             <Avatar className="w-8 h-8 border-2 border-primary">
               <div className="w-full h-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white text-sm font-semibold">
-                U
+                {user?.name.charAt(0).toUpperCase()}
               </div>
             </Avatar>
             {sidebarOpen && (
               <div className="flex-1 text-left">
-                <p className="text-sm font-medium">Пользователь</p>
-                <p className="text-xs text-muted-foreground">Pro Plan</p>
+                <p className="text-sm font-medium">{user?.name}</p>
+                <p className="text-xs text-muted-foreground">Выйти</p>
               </div>
             )}
           </button>
@@ -101,17 +388,14 @@ export default function Index() {
               {menuItems.find(item => item.id === activeSection)?.label}
             </h1>
             <p className="text-sm text-muted-foreground">
-              Создаём будущее вместе с искусственным интеллектом
+              ИИ-программист Тимур к вашим услугам
             </p>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="border-primary text-primary glow-effect">
               <Icon name="Sparkles" size={12} className="mr-1" />
-              ИИ активен
+              Тимур активен
             </Badge>
-            <Button variant="ghost" size="icon">
-              <Icon name="Settings" size={20} />
-            </Button>
           </div>
         </header>
 
@@ -119,19 +403,29 @@ export default function Index() {
           <div className="flex-1 flex flex-col">
             <ScrollArea className="flex-1 p-6">
               <div className="max-w-4xl mx-auto space-y-6">
-                {mockMessages.map((msg, idx) => (
+                {messages.length === 0 && (
+                  <Card className="glass-effect p-6 text-center">
+                    <Icon name="Bot" size={48} className="mx-auto mb-4 text-primary" />
+                    <h2 className="text-xl font-semibold mb-2">Привет! Я Тимур 👋</h2>
+                    <p className="text-muted-foreground">
+                      Ваш ИИ-программист полного цикла. Могу создать код, изображения, видео или помочь с проектом.
+                    </p>
+                  </Card>
+                )}
+                
+                {messages.map((msg, idx) => (
                   <div
                     key={idx}
                     className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
                   >
-                    <Avatar className="w-10 h-10 border-2 border-primary">
+                    <Avatar className="w-10 h-10 border-2 border-primary flex-shrink-0">
                       {msg.role === 'assistant' ? (
                         <div className="w-full h-full bg-gradient-to-br from-primary to-secondary glow-effect flex items-center justify-center">
                           <Icon name="Bot" size={20} className="text-white" />
                         </div>
                       ) : (
                         <div className="w-full h-full bg-gradient-to-br from-accent to-secondary flex items-center justify-center text-white text-sm font-semibold">
-                          U
+                          {user?.name.charAt(0).toUpperCase()}
                         </div>
                       )}
                     </Avatar>
@@ -142,10 +436,23 @@ export default function Index() {
                           : 'glass-effect'
                       }`}
                     >
-                      <p className="text-sm leading-relaxed">{msg.content}</p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                     </Card>
                   </div>
                 ))}
+                {isLoading && (
+                  <div className="flex gap-4">
+                    <Avatar className="w-10 h-10 border-2 border-primary">
+                      <div className="w-full h-full bg-gradient-to-br from-primary to-secondary glow-effect flex items-center justify-center">
+                        <Icon name="Bot" size={20} className="text-white animate-pulse" />
+                      </div>
+                    </Avatar>
+                    <Card className="flex-1 p-4 glass-effect">
+                      <p className="text-sm text-muted-foreground">Тимур думает...</p>
+                    </Card>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
 
@@ -154,28 +461,51 @@ export default function Index() {
                 <Input
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
-                  placeholder="Опишите задачу: создать сайт, нарисовать картинку, написать код..."
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
+                  placeholder="Создай сайт, нарисуй картинку, напиши код..."
                   className="flex-1 bg-muted border-border focus:border-primary"
+                  disabled={isLoading}
                 />
-                <Button className="bg-gradient-to-r from-primary to-secondary glow-effect hover:opacity-90">
-                  <Icon name="Send" size={20} />
+                <Button 
+                  onClick={startVoiceInput}
+                  variant="outline" 
+                  className={`border-primary/30 ${isListening ? 'bg-primary/20' : ''}`}
+                  disabled={isLoading || isListening}
+                >
+                  <Icon name={isListening ? 'MicOff' : 'Mic'} size={20} />
                 </Button>
-                <Button variant="outline" className="border-primary/30">
-                  <Icon name="Paperclip" size={20} />
+                <Button 
+                  onClick={handleSendMessage}
+                  className="bg-gradient-to-r from-primary to-secondary glow-effect hover:opacity-90"
+                  disabled={isLoading || !inputMessage.trim()}
+                >
+                  <Icon name="Send" size={20} />
                 </Button>
               </div>
               <div className="max-w-4xl mx-auto mt-2 flex gap-2">
-                <Badge variant="outline" className="cursor-pointer hover:bg-primary/20">
+                <Badge 
+                  variant="outline" 
+                  className="cursor-pointer hover:bg-primary/20"
+                  onClick={() => handleGenerate('code')}
+                >
                   <Icon name="Code" size={12} className="mr-1" />
-                  Код
+                  Создать код
                 </Badge>
-                <Badge variant="outline" className="cursor-pointer hover:bg-primary/20">
+                <Badge 
+                  variant="outline" 
+                  className="cursor-pointer hover:bg-primary/20"
+                  onClick={() => handleGenerate('image')}
+                >
                   <Icon name="Image" size={12} className="mr-1" />
-                  Изображение
+                  Создать изображение
                 </Badge>
-                <Badge variant="outline" className="cursor-pointer hover:bg-primary/20">
+                <Badge 
+                  variant="outline" 
+                  className="cursor-pointer hover:bg-primary/20"
+                  onClick={() => handleGenerate('video')}
+                >
                   <Icon name="Video" size={12} className="mr-1" />
-                  Видео
+                  Создать видео
                 </Badge>
               </div>
             </div>
@@ -183,193 +513,112 @@ export default function Index() {
         )}
 
         {activeSection === 'projects' && (
-          <div className="flex-1 p-6">
+          <div className="flex-1 p-6 overflow-auto">
             <div className="max-w-6xl mx-auto">
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-2xl font-semibold">Мои проекты</h2>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Все ваши созданные артефакты в одном месте
+                    {projects.length} созданных артефактов
                   </p>
                 </div>
-                <Button className="bg-gradient-to-r from-primary to-secondary glow-effect">
+                <Button 
+                  className="bg-gradient-to-r from-primary to-secondary glow-effect"
+                  onClick={() => setActiveSection('chat')}
+                >
                   <Icon name="Plus" size={16} className="mr-2" />
                   Новый проект
                 </Button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {mockArtifacts.map((artifact) => (
-                  <Card
-                    key={artifact.id}
-                    className="glass-effect hover:border-primary/50 transition-all cursor-pointer group"
+              {projects.length === 0 ? (
+                <Card className="glass-effect p-12 text-center">
+                  <Icon name="FolderOpen" size={64} className="mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-xl font-semibold mb-2">Пока нет проектов</h3>
+                  <p className="text-muted-foreground mb-4">
+                    Создайте первый проект с помощью Тимур
+                  </p>
+                  <Button 
+                    onClick={() => setActiveSection('chat')}
+                    className="bg-gradient-to-r from-primary to-secondary glow-effect"
                   >
-                    <div className="p-4">
-                      <div className="flex items-start justify-between mb-3">
-                        <div
-                          className={`w-12 h-12 rounded-lg flex items-center justify-center glow-effect ${
-                            artifact.type === 'code'
-                              ? 'bg-primary/20'
-                              : artifact.type === 'image'
-                              ? 'bg-secondary/20'
-                              : 'bg-accent/20'
-                          }`}
-                        >
-                          <Icon
-                            name={
-                              artifact.type === 'code'
-                                ? 'Code2'
-                                : artifact.type === 'image'
-                                ? 'Image'
-                                : 'Video'
-                            }
-                            size={24}
-                          />
+                    Начать диалог
+                  </Button>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {projects.map((project) => (
+                    <Card
+                      key={project.id}
+                      className="glass-effect hover:border-primary/50 transition-all cursor-pointer group"
+                    >
+                      <div className="p-4">
+                        <div className="flex items-start justify-between mb-3">
+                          <div
+                            className={`w-12 h-12 rounded-lg flex items-center justify-center glow-effect ${
+                              project.type === 'code'
+                                ? 'bg-primary/20'
+                                : project.type === 'image'
+                                ? 'bg-secondary/20'
+                                : 'bg-accent/20'
+                            }`}
+                          >
+                            <Icon
+                              name={
+                                project.type === 'code'
+                                  ? 'Code2'
+                                  : project.type === 'image'
+                                  ? 'Image'
+                                  : 'Video'
+                              }
+                              size={24}
+                            />
+                          </div>
+                          <Badge variant="outline" className="text-xs">
+                            {project.language || project.type}
+                          </Badge>
                         </div>
-                        <Badge variant="outline" className="text-xs">
-                          {artifact.type === 'code'
-                            ? artifact.language
-                            : artifact.type === 'image'
-                            ? artifact.format
-                            : artifact.duration}
-                        </Badge>
-                      </div>
-                      <h3 className="font-semibold mb-1 group-hover:text-primary transition-colors">
-                        {artifact.title}
-                      </h3>
-                      <p className="text-xs text-muted-foreground">{artifact.date}</p>
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeSection === 'gallery' && (
-          <div className="flex-1 p-6">
-            <div className="max-w-6xl mx-auto">
-              <div className="mb-6">
-                <h2 className="text-2xl font-semibold">Галерея медиа</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Изображения и видео, созданные ИИ
-                </p>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                  <Card
-                    key={i}
-                    className="aspect-square glass-effect hover:border-primary/50 transition-all cursor-pointer overflow-hidden group"
-                  >
-                    <div className="w-full h-full bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center">
-                      <Icon name="Image" size={48} className="opacity-50 group-hover:opacity-100 transition-opacity" />
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeSection === 'history' && (
-          <div className="flex-1 p-6">
-            <div className="max-w-4xl mx-auto">
-              <div className="mb-6">
-                <h2 className="text-2xl font-semibold">История запросов</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Все ваши диалоги с ИИ
-                </p>
-              </div>
-              <div className="space-y-3">
-                {[
-                  'Создай лендинг для IT-компании',
-                  'Сгенерируй логотип в минималистичном стиле',
-                  'Напиши функцию для сортировки массива',
-                  'Создай промо-видео продукта'
-                ].map((query, idx) => (
-                  <Card
-                    key={idx}
-                    className="glass-effect hover:border-primary/50 transition-all cursor-pointer p-4"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center glow-effect">
-                        <Icon name="MessageSquare" size={20} />
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-medium">{query}</p>
+                        <h3 className="font-semibold mb-1 group-hover:text-primary transition-colors line-clamp-2">
+                          {project.title}
+                        </h3>
                         <p className="text-xs text-muted-foreground">
-                          {idx === 0 ? '10 минут назад' : `${idx + 1} часа назад`}
+                          {new Date(project.created_at).toLocaleDateString('ru-RU')}
                         </p>
+                        {project.type === 'image' && project.content && (
+                          <img 
+                            src={project.content} 
+                            alt={project.title}
+                            className="mt-3 rounded-lg w-full h-32 object-cover"
+                          />
+                        )}
                       </div>
-                      <Icon name="ChevronRight" size={20} className="text-muted-foreground" />
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeSection === 'code' && (
-          <div className="flex-1 p-6">
-            <div className="max-w-6xl mx-auto">
-              <div className="mb-6">
-                <h2 className="text-2xl font-semibold">Репозиторий кода</h2>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Весь сгенерированный код и документация
-                </p>
-              </div>
-              <div className="grid gap-4">
-                {[
-                  { name: 'dashboard.tsx', lang: 'TypeScript', lines: 247 },
-                  { name: 'api_gateway.py', lang: 'Python', lines: 183 },
-                  { name: 'styles.css', lang: 'CSS', lines: 92 }
-                ].map((file, idx) => (
-                  <Card
-                    key={idx}
-                    className="glass-effect hover:border-primary/50 transition-all cursor-pointer p-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-lg bg-primary/20 flex items-center justify-center glow-effect">
-                        <Icon name="FileCode" size={24} />
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-medium code-font">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {file.lang} • {file.lines} строк
-                        </p>
-                      </div>
-                      <Button variant="outline" size="sm">
-                        <Icon name="Download" size={16} className="mr-2" />
-                        Скачать
-                      </Button>
-                    </div>
-                  </Card>
-                ))}
-              </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
 
         {activeSection === 'profile' && (
-          <div className="flex-1 p-6">
+          <div className="flex-1 p-6 overflow-auto">
             <div className="max-w-2xl mx-auto">
               <div className="mb-6">
                 <h2 className="text-2xl font-semibold">Профиль</h2>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Управление аккаунтом и настройки
+                  Управление аккаунтом
                 </p>
               </div>
               <Card className="glass-effect p-6 mb-4">
                 <div className="flex items-center gap-4 mb-6">
                   <Avatar className="w-20 h-20 border-4 border-primary glow-effect">
                     <div className="w-full h-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white text-2xl font-bold">
-                      U
+                      {user?.name.charAt(0).toUpperCase()}
                     </div>
                   </Avatar>
                   <div>
-                    <h3 className="text-xl font-semibold">Пользователь</h3>
-                    <p className="text-sm text-muted-foreground">user@disol.ai</p>
+                    <h3 className="text-xl font-semibold">{user?.name}</h3>
+                    <p className="text-sm text-muted-foreground">{user?.email}</p>
                     <Badge className="mt-2 bg-gradient-to-r from-primary to-secondary">
                       Pro Plan
                     </Badge>
@@ -378,21 +627,25 @@ export default function Index() {
                 <div className="space-y-4">
                   <div className="flex justify-between items-center py-3 border-b border-border">
                     <span className="text-sm">Всего проектов</span>
-                    <span className="font-semibold">24</span>
+                    <span className="font-semibold">{projects.length}</span>
                   </div>
                   <div className="flex justify-between items-center py-3 border-b border-border">
-                    <span className="text-sm">Генераций ИИ</span>
-                    <span className="font-semibold">1,847</span>
+                    <span className="text-sm">ИИ программист</span>
+                    <span className="font-semibold">Тимур</span>
                   </div>
                   <div className="flex justify-between items-center py-3">
-                    <span className="text-sm">Использовано токенов</span>
-                    <span className="font-semibold">2.4M</span>
+                    <span className="text-sm">Дата регистрации</span>
+                    <span className="font-semibold">Сегодня</span>
                   </div>
                 </div>
               </Card>
-              <Button className="w-full bg-gradient-to-r from-primary to-secondary glow-effect">
-                <Icon name="Settings" size={16} className="mr-2" />
-                Настройки аккаунта
+              <Button 
+                onClick={handleLogout}
+                variant="outline"
+                className="w-full border-destructive text-destructive hover:bg-destructive hover:text-white"
+              >
+                <Icon name="LogOut" size={16} className="mr-2" />
+                Выйти из аккаунта
               </Button>
             </div>
           </div>

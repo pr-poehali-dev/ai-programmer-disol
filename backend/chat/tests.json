@@ -1,0 +1,31 @@
+{
+  "tests": [
+    {
+      "name": "Send message to Timur",
+      "method": "POST",
+      "body": {
+        "user_id": 1,
+        "message": "Привет, Тимур! Создай простой React компонент кнопки"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "success": true,
+        "session_id": "number",
+        "message": "string"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get user chat sessions",
+      "method": "GET",
+      "queryParams": {
+        "user_id": "1"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "sessions": "array"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}

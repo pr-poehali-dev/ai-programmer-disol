@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Generate code",
+      "method": "POST",
+      "body": {
+        "user_id": 1,
+        "type": "code",
+        "prompt": "Create a React button component"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "success": true,
+        "type": "code",
+        "code": "string"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}

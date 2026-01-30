@@ -1,0 +1,32 @@
+{
+  "tests": [
+    {
+      "name": "Create new project",
+      "method": "POST",
+      "body": {
+        "user_id": 1,
+        "title": "Test Project",
+        "type": "code",
+        "content": "console.log('test')"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "success": true,
+        "project_id": "number"
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get user projects",
+      "method": "GET",
+      "queryParams": {
+        "user_id": "1"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "projects": "array"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
